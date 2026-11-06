@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, RwLock};
 
 const MAX_RAY_TILES: f32 = 28.0;
+
 #[derive(Clone, Copy)]
 pub struct ShadowBox {
     pub id: u32,
@@ -177,6 +178,36 @@ fn project_ray_solid(start_x: f32, start_y: f32, px: f32, py: f32) -> (f32, f32)
     (start_x + nx * MAX_RAY_TILES, start_y + ny * MAX_RAY_TILES)
 }
 
+fn has_los_to_turf(px: f32, py: f32, target_tx: i32, target_ty: i32, walls: &HashSet<(i32, i32)>) -> bool {
+    let tx = target_tx as f32 + 0.5;
+    let ty = target_ty as f32 + 0.5;
+    let dx = tx - px;
+    let dy = ty - py;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 0.6 {
+        return true;
+    }
+
+    let steps = (dist * 2.0).ceil() as i32;
+    let step_x = dx / (steps as f32);
+    let step_y = dy / (steps as f32);
+    let mut cx = px;
+    let mut cy = py;
+
+    for _ in 1..steps {
+        cx += step_x;
+        cy += step_y;
+        let check_x = cx.floor() as i32;
+        let check_y = cy.floor() as i32;
+
+        if walls.contains(&(check_x, check_y)) {
+            if check_x != target_tx || check_y != target_ty {
+                return false;
+            }
+        }
+    }
+    true
+}
 
 #[inline(always)]
 fn push_triangle_fast(
@@ -438,9 +469,9 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         let mut out = Vec::with_capacity(512);
 
         for &(tx, ty) in &trees {
-            let cx = tx as f32 + 0.5;
-            let cy = ty as f32 + 0.5;
-            if is_point_visible(px, py, cx, cy, &walls) {
+            if has_los_to_turf(px, py, tx, ty, &walls) {
+                let cx = tx as f32 + 0.5;
+                let cy = ty as f32 + 0.5;
                 let r = 0.35;
                 let vx = cx - px;
                 let vy = cy - py;
@@ -481,31 +512,10 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                 let in_view_y = sbox.y2 >= (py - radius) && sbox.y1 <= (py + radius);
 
                 if in_view_x && in_view_y {
-                    let cx = (sbox.x1 + sbox.x2) / 2.0;
-                    let cy = (sbox.y1 + sbox.y2) / 2.0;
+                    let obj_tx = sbox.x1.floor() as i32;
+                    let obj_ty = sbox.y1.floor() as i32;
 
-                    let tx1 = sbox.x1 + (sbox.x2 - sbox.x1) * 0.01;
-                    let tx2 = sbox.x2 - (sbox.x2 - sbox.x1) * 0.01;
-                    let ty1 = sbox.y1 + (sbox.y2 - sbox.y1) * 0.01;
-                    let ty2 = sbox.y2 - (sbox.y2 - sbox.y1) * 0.01;
-
-                    let targets = [
-                        (cx, cy),
-                        (cx, ty1),
-                        (cx, ty2),
-                        (tx1, cy),
-                        (tx2, cy)
-                    ];
-
-                    let mut can_cast_shadow = false;
-                    for &(target_x, target_y) in &targets {
-                        if is_point_visible(px, py, target_x, target_y, &walls) {
-                            can_cast_shadow = true;
-                            break;
-                        }
-                    }
-
-                    if can_cast_shadow {
+                    if has_los_to_turf(px, py, obj_tx, obj_ty, &walls) {
                         render_shadow_box(&mut out, px, py, sbox);
                     }
                 }
@@ -723,59 +733,46 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
 }
 
 #[inline(always)]
-fn ray_hits_box_strict(px: f32, py: f32, dx: f32, dy: f32, dist: f32, bx1: f32, by1: f32, bx2: f32, by2: f32) -> bool {
-    if dist < 0.0001 { return false; }
+fn ray_hits_box_strict(px: f32, py: f32, tx: f32, ty: f32, bx1: f32, by1: f32, bx2: f32, by2: f32) -> bool {
+    let shrink = 0.02;
+    let min_x = bx1 + shrink;
+    let max_x = bx2 - shrink;
+    let min_y = by1 + shrink;
+    let max_y = by2 - shrink;
 
-    let mut t_min = f32::NEG_INFINITY;
-    let mut t_max = f32::INFINITY;
-
-    if dx.abs() > 0.0001 {
-        let mut tx1 = (bx1 - px) / dx;
-        let mut tx2 = (bx2 - px) / dx;
-        if tx1 > tx2 { std::mem::swap(&mut tx1, &mut tx2); }
-        t_min = t_min.max(tx1);
-        t_max = t_max.min(tx2);
-    } else if px < bx1 || px > bx2 {
-        return false;
+    if min_x >= max_x || min_y >= max_y { 
+        return false; 
     }
 
-    if dy.abs() > 0.0001 {
-        let mut ty1 = (by1 - py) / dy;
-        let mut ty2 = (by2 - py) / dy;
-        if ty1 > ty2 { std::mem::swap(&mut ty1, &mut ty2); }
-        t_min = t_min.max(ty1);
-        t_max = t_max.min(ty2);
-    } else if py < by1 || py > by2 {
-        return false;
-    }
-
-    if t_min <= 0.0 {
-        return false;
-    }
-
-    let margin = (0.1_f32 / dist).min(0.49);
-
-    t_min <= t_max && t_max > margin && t_min < (1.0 - margin)
-}
-
-
-#[inline(always)]
-fn is_point_visible(px: f32, py: f32, tx: f32, ty: f32, walls: &HashSet<(i32, i32)>) -> bool {
     let dx = tx - px;
     let dy = ty - py;
-    let dist = (dx * dx + dy * dy).sqrt();
-    if dist < 0.0001 { return true; }
 
-    for &(wx, wy) in walls {
-        let bx1 = wx as f32;
-        let by1 = wy as f32;
-        let bx2 = bx1 + 1.0;
-        let by2 = by1 + 1.0;
-        if ray_hits_box_strict(px, py, dx, dy, dist, bx1, by1, bx2, by2) {
-            return false;
-        }
+    let mut tmin = 0.0f32;
+    let mut tmax = 1.0f32;
+
+    if dx.abs() < 0.0001 {
+        if px < min_x || px > max_x { return false; }
+    } else {
+        let mut t1 = (min_x - px) / dx;
+        let mut t2 = (max_x - px) / dx;
+        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
+        tmin = tmin.max(t1);
+        tmax = tmax.min(t2);
+        if tmin > tmax { return false; }
     }
-    true
+
+    if dy.abs() < 0.0001 {
+        if py < min_y || py > max_y { return false; }
+    } else {
+        let mut t1 = (min_y - py) / dy;
+        let mut t2 = (max_y - py) / dy;
+        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
+        tmin = tmin.max(t1);
+        tmax = tmax.min(t2);
+        if tmin > tmax { return false; }
+    }
+
+    tmin <= tmax && tmin > 0.02 && tmin < 0.98
 }
 
 #[unsafe(no_mangle)]
@@ -808,10 +805,21 @@ pub unsafe extern "C" fn get_visible_boxes(argc: u32, argv: *const CByondValue) 
             }
         }
 
-        let active_boxes: Vec<&ShadowBox> = map.boxes.values().filter(|b| b.z == pz).collect();
+        let check_radius = radius + 2.0;
+        let mut nearby_boxes = Vec::new();
+        for sbox in map.boxes.values() {
+            if sbox.z == pz {
+                let in_view_x = sbox.x2 >= (px - check_radius) && sbox.x1 <= (px + check_radius);
+                let in_view_y = sbox.y2 >= (py - check_radius) && sbox.y1 <= (py + check_radius);
+                if in_view_x && in_view_y {
+                    nearby_boxes.push(sbox);
+                }
+            }
+        }
+
         let mut visible_ids = Vec::new();
 
-        for sbox in &active_boxes {
+        for sbox in &nearby_boxes {
             let in_view_x = sbox.x2 >= (px - radius) && sbox.x1 <= (px + radius);
             let in_view_y = sbox.y2 >= (py - radius) && sbox.y1 <= (py + radius);
 
@@ -821,10 +829,10 @@ pub unsafe extern "C" fn get_visible_boxes(argc: u32, argv: *const CByondValue) 
 
             let cx = (sbox.x1 + sbox.x2) / 2.0;
             let cy = (sbox.y1 + sbox.y2) / 2.0;
-            let tx1 = sbox.x1 + (sbox.x2 - sbox.x1) * 0.01;
-            let tx2 = sbox.x2 - (sbox.x2 - sbox.x1) * 0.01;
-            let ty1 = sbox.y1 + (sbox.y2 - sbox.y1) * 0.01;
-            let ty2 = sbox.y2 - (sbox.y2 - sbox.y1) * 0.01;
+            let tx1 = sbox.x1 + (sbox.x2 - sbox.x1) * 0.05;
+            let tx2 = sbox.x2 - (sbox.x2 - sbox.x1) * 0.05;
+            let ty1 = sbox.y1 + (sbox.y2 - sbox.y1) * 0.05;
+            let ty2 = sbox.y2 - (sbox.y2 - sbox.y1) * 0.05;
 
             let targets = [
                 (cx, cy),
@@ -837,29 +845,28 @@ pub unsafe extern "C" fn get_visible_boxes(argc: u32, argv: *const CByondValue) 
             let mut occluded_by_prop = true;
 
             for &(target_x, target_y) in &targets {
-                    if !is_point_visible(px, py, target_x, target_y, &walls) {
-                        continue;
-                    }
+                let obj_tx = target_x.floor() as i32;
+                let obj_ty = target_y.floor() as i32;
+                
+                if !has_los_to_turf(px, py, obj_tx, obj_ty, &walls) {
+                    continue;
+                }
 
-                    let dx = target_x - px;
-                    let dy = target_y - py;
-                    let dist = (dx * dx + dy * dy).sqrt();
+                let mut point_blocked = false;
+                for other_box in &nearby_boxes {
+                    if other_box.id == sbox.id { continue; }
 
-                    let mut point_blocked = false;
-                    for other_box in &active_boxes {
-                        if other_box.id == sbox.id { continue; }
-
-                        if ray_hits_box_strict(px, py, dx, dy, dist, other_box.x1, other_box.y1, other_box.x2, other_box.y2) {
-                            point_blocked = true;
-                            break;
-                        }
-                    }
-
-                    if !point_blocked {
-                        occluded_by_prop = false;
+                    if ray_hits_box_strict(px, py, target_x, target_y, other_box.x1, other_box.y1, other_box.x2, other_box.y2) {
+                        point_blocked = true;
                         break;
                     }
                 }
+
+                if !point_blocked {
+                    occluded_by_prop = false;
+                    break;
+                }
+            }
 
             if !occluded_by_prop {
                 visible_ids.push(ByondValue::new_num(sbox.id as f32));
