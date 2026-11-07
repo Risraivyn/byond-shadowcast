@@ -217,7 +217,7 @@ fn push_triangle_fast(
     ax: f32, ay: f32,
     bx: f32, by: f32,
     cx: f32, cy: f32,
-    key: &str,
+    key: f32,
 ) {
     let a = (bx - ax) / 32.0;
     let d = (by - ay) / 32.0;
@@ -235,18 +235,7 @@ fn push_triangle_fast(
     out.push(ByondValue::new_num(d));
     out.push(ByondValue::new_num(e));
     out.push(ByondValue::new_num(f_mat));
-    out.push(ByondValue::new_str(key).unwrap_or_else(|_| ByondValue::null()));
-}
-
-#[inline(always)]
-fn extend_point(from_x: f32, from_y: f32, to_x: f32, to_y: f32, dist: f32) -> (f32, f32) {
-    let dx = to_x - from_x;
-    let dy = to_y - from_y;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 0.001 {
-        return (to_x, to_y);
-    }
-    (to_x + (dx / len) * dist, to_y + (dy / len) * dist)
+    out.push(ByondValue::new_num(key));
 }
 
 fn push_quad_fast(
@@ -257,19 +246,32 @@ fn push_quad_fast(
     w2x: f32, w2y: f32,
     h1x: f32, h1y: f32,
     h2x: f32, h2y: f32,
-    key: &str,
+    key1: f32,
+    key2: f32,
 ) {
     const OVERLAP_PX: f32 = 2.0;
 
     let t1_h2 = extend_point(w1x, w1y, h2x, h2y, OVERLAP_PX);
     push_triangle_fast(out, anchor_x, anchor_y,
         w1x, w1y, w2x, w2y, t1_h2.0, t1_h2.1,
-        &format!("{}_1", key));
+        key1);
 
     let t2_h1 = extend_point(w1x, w1y, h1x, h1y, OVERLAP_PX);
     push_triangle_fast(out, anchor_x, anchor_y,
         w1x, w1y, h2x, h2y, t2_h1.0, t2_h1.1,
-        &format!("{}_2", key));
+        key2);
+}
+
+#[inline(always)]
+fn make_key(category: u32, x: u32, y: u32, part: u32) -> f32 {
+    let val = (category * 500_000) + ((y * 256 + x) * 8) + part;
+    val as f32
+}
+
+#[inline(always)]
+fn make_box_key(box_id: u32, part: u32) -> f32 {
+    let val = 3_000_000 + (box_id * 32) + part;
+    val as f32
 }
 
 #[inline(always)]
@@ -291,6 +293,8 @@ fn render_shadow_box(
     let txf = anchor_x as f32;
     let tyf = anchor_y as f32;
 
+    let bid = sbox.id;
+
     if py < by1 {
         let dy = (by1 - py).max(0.001);
         let t = (height / dy).min(50.0);
@@ -306,14 +310,14 @@ fn render_shadow_box(
             (x_exit_r - txf) * 32.0, (by2 - tyf) * 32.0,
             (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
             (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            &format!("{}_box_S", sbox.id));
+            make_box_key(bid, 1), make_box_key(bid, 2));
 
         if x_exit_l < bx1 {
             push_triangle_fast(out, anchor_x, anchor_y,
                 (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (x_exit_l - txf) * 32.0, (by2 - tyf) * 32.0,
-                &format!("{}_box_S_L", sbox.id));
+                make_box_key(bid, 3));
         }
 
         if x_exit_r > bx2 {
@@ -321,7 +325,7 @@ fn render_shadow_box(
                 (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (x_exit_r - txf) * 32.0, (by2 - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
-                &format!("{}_box_S_R", sbox.id));
+                make_box_key(bid, 4));
         }
     }
 
@@ -340,14 +344,14 @@ fn render_shadow_box(
             (x_exit_l - txf) * 32.0, (by1 - tyf) * 32.0,
             (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
             (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            &format!("{}_box_N", sbox.id));
+            make_box_key(bid, 5), make_box_key(bid, 6));
 
         if x_exit_r > bx2 {
             push_triangle_fast(out, anchor_x, anchor_y,
                 (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (x_exit_r - txf) * 32.0, (by1 - tyf) * 32.0,
-                &format!("{}_box_N_R", sbox.id));
+                make_box_key(bid, 7));
         }
 
         if x_exit_l < bx1 {
@@ -355,7 +359,7 @@ fn render_shadow_box(
                 (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (x_exit_l - txf) * 32.0, (by1 - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
-                &format!("{}_box_N_L", sbox.id));
+                make_box_key(bid, 8));
         }
     }
 
@@ -374,14 +378,14 @@ fn render_shadow_box(
             (bx2 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
             (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
             (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            &format!("{}_box_W", sbox.id));
+            make_box_key(bid, 9), make_box_key(bid, 10));
 
         if y_exit_top > by2 {
             push_triangle_fast(out, anchor_x, anchor_y,
                 (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
-                &format!("{}_box_W_T", sbox.id));
+                make_box_key(bid, 11));
         }
 
         if y_exit_bot < by1 {
@@ -389,7 +393,7 @@ fn render_shadow_box(
                 (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
                 (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
-                &format!("{}_box_W_B", sbox.id));
+                make_box_key(bid, 12));
         }
     }
 
@@ -408,14 +412,14 @@ fn render_shadow_box(
             (bx1 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
             (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
             (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            &format!("{}_box_E", sbox.id));
+            make_box_key(bid, 13), make_box_key(bid, 14));
 
         if y_exit_bot < by1 {
             push_triangle_fast(out, anchor_x, anchor_y,
                 (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
-                &format!("{}_box_E_B", sbox.id));
+                make_box_key(bid, 15));
         }
 
         if y_exit_top > by2 {
@@ -423,7 +427,7 @@ fn render_shadow_box(
                 (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
                 (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
-                &format!("{}_box_E_T", sbox.id));
+                make_box_key(bid, 16));
         }
     }
 }
@@ -496,12 +500,14 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     let txf = tx as f32;
                     let tyf = ty as f32;
 
+                    let ux = tx as u32; let uy = ty as u32;
+
                     push_quad_fast(&mut out, tx, ty,
                         (t1_x - txf) * 32.0, (t1_y - tyf) * 32.0,
                         (t2_x - txf) * 32.0, (t2_y - tyf) * 32.0,
                         (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
                         (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-                        &format!("{}_{}_tree", tx, ty));
+                        make_key(4, ux, uy, 1), make_key(4, ux, uy, 2));
                 }
             }
         }
@@ -525,6 +531,8 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         for &(tx, ty) in &walls {
             let txf = tx as f32;
             let tyf = ty as f32;
+            let ux = tx as u32;
+            let uy = ty as u32;
 
             let open_s = !walls.contains(&(tx, ty - 1));
             if open_s && py < tyf {
@@ -553,14 +561,14 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         (x_exit_r - txf) * 32.0, 32.0,
                         (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
                         (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
-                        &format!("{}_{}_{}_S", left_x, right_x, ty));
+                        make_key(0, left_x as u32, uy, 1), make_key(0, left_x as u32, uy, 2));
 
                     if x_exit_l < left_xf {
                         push_triangle_fast(&mut out, tx, ty,
                             (left_xf - txf) * 32.0, 0.0,
                             (left_xf - txf) * 32.0, 32.0,
                             (x_exit_l - txf) * 32.0, 32.0,
-                            &format!("{}_{}_{}_S_L", left_x, right_x, ty));
+                            make_key(0, left_x as u32, uy, 3));
                     }
 
                     if x_exit_r > right_xf {
@@ -568,7 +576,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                             (right_xf - txf) * 32.0, 0.0,
                             (x_exit_r - txf) * 32.0, 32.0,
                             (right_xf - txf) * 32.0, 32.0,
-                            &format!("{}_{}_{}_S_R", left_x, right_x, ty));
+                            make_key(0, left_x as u32, uy, 4));
                     }
                 }
             }
@@ -601,14 +609,14 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         (x_exit_l - txf) * 32.0, 0.0,
                         (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
                         (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
-                        &format!("{}_{}_{}_N", left_x, right_x, ty));
+                        make_key(1, left_x as u32, uy, 1), make_key(1, left_x as u32, uy, 2));
 
                     if x_exit_r > right_xf {
                         push_triangle_fast(&mut out, tx, ty,
                             (right_xf - txf) * 32.0, 32.0,
                             (right_xf - txf) * 32.0, 0.0,
                             (x_exit_r - txf) * 32.0, 0.0,
-                            &format!("{}_{}_{}_N_R", left_x, right_x, ty));
+                            make_key(1, left_x as u32, uy, 3));
                     }
 
                     if x_exit_l < left_xf {
@@ -616,7 +624,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                             (left_xf - txf) * 32.0, 32.0,
                             (x_exit_l - txf) * 32.0, 0.0,
                             (left_xf - txf) * 32.0, 0.0,
-                            &format!("{}_{}_{}_N_L", left_x, right_x, ty));
+                            make_key(1, left_x as u32, uy, 4));
                     }
                 }
             }
@@ -648,14 +656,14 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         32.0, (y_exit_bot - tyf) * 32.0,
                         (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
                         (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
-                        &format!("{}_{}_{}_W", tx, bot_y, top_y));
+                        make_key(2, ux, bot_y as u32, 1), make_key(2, ux, bot_y as u32, 2));
 
                     if y_exit_top > top_yf {
                         push_triangle_fast(&mut out, tx, ty,
                             0.0, (top_yf - tyf) * 32.0,
                             32.0, (y_exit_top - tyf) * 32.0,
                             32.0, (top_yf - tyf) * 32.0,
-                            &format!("{}_{}_{}_W_T", tx, bot_y, top_y));
+                            make_key(2, ux, bot_y as u32, 3));
                     }
 
                     if y_exit_bot < bot_yf {
@@ -663,7 +671,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                             0.0, (bot_yf - tyf) * 32.0,
                             32.0, (bot_yf - tyf) * 32.0,
                             32.0, (y_exit_bot - tyf) * 32.0,
-                            &format!("{}_{}_{}_W_B", tx, bot_y, top_y));
+                            make_key(2, ux, bot_y as u32, 4));
                     }
                 }
             }
@@ -696,14 +704,14 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         0.0, (y_exit_top - tyf) * 32.0,
                         (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
                         (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
-                        &format!("{}_{}_{}_E", tx, bot_y, top_y));
+                        make_key(3, ux, bot_y as u32, 1), make_key(3, ux, bot_y as u32, 2));
 
                     if y_exit_bot < bot_yf {
                         push_triangle_fast(&mut out, tx, ty,
                             32.0, (bot_yf - tyf) * 32.0,
                             0.0, (y_exit_bot - tyf) * 32.0,
                             0.0, (bot_yf - tyf) * 32.0,
-                            &format!("{}_{}_{}_E_B", tx, bot_y, top_y));
+                            make_key(3, ux, bot_y as u32, 3));
                     }
 
                     if y_exit_top > top_yf {
@@ -711,7 +719,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                             32.0, (top_yf - tyf) * 32.0,
                             0.0, (top_yf - tyf) * 32.0,
                             0.0, (y_exit_top - tyf) * 32.0,
-                            &format!("{}_{}_{}_E_T", tx, bot_y, top_y));
+                            make_key(3, ux, bot_y as u32, 4));
                     }
                 }
             }
@@ -733,46 +741,59 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
 }
 
 #[inline(always)]
-fn ray_hits_box_strict(px: f32, py: f32, tx: f32, ty: f32, bx1: f32, by1: f32, bx2: f32, by2: f32) -> bool {
-    let shrink = 0.02;
-    let min_x = bx1 + shrink;
-    let max_x = bx2 - shrink;
-    let min_y = by1 + shrink;
-    let max_y = by2 - shrink;
+fn ray_hits_box_strict(px: f32, py: f32, dx: f32, dy: f32, dist: f32, bx1: f32, by1: f32, bx2: f32, by2: f32) -> bool {
+    if dist < 0.0001 { return false; }
 
-    if min_x >= max_x || min_y >= max_y { 
-        return false; 
+    let mut t_min = f32::NEG_INFINITY;
+    let mut t_max = f32::INFINITY;
+
+    if dx.abs() > 0.0001 {
+        let mut tx1 = (bx1 - px) / dx;
+        let mut tx2 = (bx2 - px) / dx;
+        if tx1 > tx2 { std::mem::swap(&mut tx1, &mut tx2); }
+        t_min = t_min.max(tx1);
+        t_max = t_max.min(tx2);
+    } else if px < bx1 || px > bx2 {
+        return false;
     }
 
+    if dy.abs() > 0.0001 {
+        let mut ty1 = (by1 - py) / dy;
+        let mut ty2 = (by2 - py) / dy;
+        if ty1 > ty2 { std::mem::swap(&mut ty1, &mut ty2); }
+        t_min = t_min.max(ty1);
+        t_max = t_max.min(ty2);
+    } else if py < by1 || py > by2 {
+        return false;
+    }
+
+    if t_min <= 0.0 {
+        return false;
+    }
+
+    let margin = (0.1_f32 / dist).min(0.49);
+
+    t_min <= t_max && t_max > margin && t_min < (1.0 - margin)
+}
+
+
+#[inline(always)]
+fn is_point_visible(px: f32, py: f32, tx: f32, ty: f32, walls: &HashSet<(i32, i32)>) -> bool {
     let dx = tx - px;
     let dy = ty - py;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 0.0001 { return true; }
 
-    let mut tmin = 0.0f32;
-    let mut tmax = 1.0f32;
-
-    if dx.abs() < 0.0001 {
-        if px < min_x || px > max_x { return false; }
-    } else {
-        let mut t1 = (min_x - px) / dx;
-        let mut t2 = (max_x - px) / dx;
-        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
-        tmin = tmin.max(t1);
-        tmax = tmax.min(t2);
-        if tmin > tmax { return false; }
+    for &(wx, wy) in walls {
+        let bx1 = wx as f32;
+        let by1 = wy as f32;
+        let bx2 = bx1 + 1.0;
+        let by2 = by1 + 1.0;
+        if ray_hits_box_strict(px, py, dx, dy, dist, bx1, by1, bx2, by2) {
+            return false;
+        }
     }
-
-    if dy.abs() < 0.0001 {
-        if py < min_y || py > max_y { return false; }
-    } else {
-        let mut t1 = (min_y - py) / dy;
-        let mut t2 = (max_y - py) / dy;
-        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
-        tmin = tmin.max(t1);
-        tmax = tmax.min(t2);
-        if tmin > tmax { return false; }
-    }
-
-    tmin <= tmax && tmin > 0.02 && tmin < 0.98
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -845,28 +866,29 @@ pub unsafe extern "C" fn get_visible_boxes(argc: u32, argv: *const CByondValue) 
             let mut occluded_by_prop = true;
 
             for &(target_x, target_y) in &targets {
-                let obj_tx = target_x.floor() as i32;
-                let obj_ty = target_y.floor() as i32;
-                
-                if !has_los_to_turf(px, py, obj_tx, obj_ty, &walls) {
-                    continue;
-                }
+                    if !is_point_visible(px, py, target_x, target_y, &walls) {
+                        continue;
+                    }
 
-                let mut point_blocked = false;
-                for other_box in &nearby_boxes {
-                    if other_box.id == sbox.id { continue; }
+                    let dx = target_x - px;
+                    let dy = target_y - py;
+                    let dist = (dx * dx + dy * dy).sqrt();
 
-                    if ray_hits_box_strict(px, py, target_x, target_y, other_box.x1, other_box.y1, other_box.x2, other_box.y2) {
-                        point_blocked = true;
+                    let mut point_blocked = false;
+                    for other_box in &nearby_boxes {
+                        if other_box.id == sbox.id { continue; }
+
+                        if ray_hits_box_strict(px, py, dx, dy, dist, other_box.x1, other_box.y1, other_box.x2, other_box.y2) {
+                            point_blocked = true;
+                            break;
+                        }
+                    }
+
+                    if !point_blocked {
+                        occluded_by_prop = false;
                         break;
                     }
                 }
-
-                if !point_blocked {
-                    occluded_by_prop = false;
-                    break;
-                }
-            }
 
             if !occluded_by_prop {
                 visible_ids.push(ByondValue::new_num(sbox.id as f32));
@@ -886,4 +908,14 @@ pub unsafe extern "C" fn get_visible_boxes(argc: u32, argv: *const CByondValue) 
         Ok(val) => val.0,
         Err(_) => ByondValue::null().0,
     }
+}
+#[inline(always)]
+fn extend_point(from_x: f32, from_y: f32, to_x: f32, to_y: f32, dist: f32) -> (f32, f32) {
+    let dx = to_x - from_x;
+    let dy = to_y - from_y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.001 {
+        return (to_x, to_y);
+    }
+    (to_x + (dx / len) * dist, to_y + (dy / len) * dist)
 }
