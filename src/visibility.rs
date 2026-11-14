@@ -210,6 +210,94 @@ fn has_los_to_turf(px: f32, py: f32, target_tx: i32, target_ty: i32, walls: &Has
 }
 
 #[inline(always)]
+fn has_los_to_point(px: f32, py: f32, tx: f32, ty: f32, walls: &HashSet<(i32, i32)>) -> bool {
+    let dx = tx - px;
+    let dy = ty - py;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 0.3 {
+        return true;
+    }
+
+    let steps = (dist * 3.0).ceil() as i32;
+    let step_x = dx / (steps as f32);
+    let step_y = dy / (steps as f32);
+    let mut cx = px;
+    let mut cy = py;
+
+    for _ in 1..steps {
+        cx += step_x;
+        cy += step_y;
+        if walls.contains(&(cx.floor() as i32, cy.floor() as i32)) {
+            return false;
+        }
+    }
+    true
+}
+
+#[inline(always)]
+fn is_horiz_segment_visible(px: f32, py: f32, x_start: i32, x_end: i32, face_y: f32, walls: &HashSet<(i32, i32)>) -> bool {
+    for tx in x_start..=x_end {
+        let txf = tx as f32;
+        if has_los_to_point(px, py, txf + 0.5, face_y, walls)
+            || has_los_to_point(px, py, txf + 0.08, face_y, walls)
+            || has_los_to_point(px, py, txf + 0.92, face_y, walls)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+fn is_vert_segment_visible(px: f32, py: f32, y_start: i32, y_end: i32, face_x: f32, walls: &HashSet<(i32, i32)>) -> bool {
+    for ty in y_start..=y_end {
+        let tyf = ty as f32;
+        if has_los_to_point(px, py, face_x, tyf + 0.5, walls)
+            || has_los_to_point(px, py, face_x, tyf + 0.08, walls)
+            || has_los_to_point(px, py, face_x, tyf + 0.92, walls)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline(always)]
+fn is_tree_point_visible(
+    px: f32, py: f32,
+    qx: f32, qy: f32,
+    walls: &HashSet<(i32, i32)>,
+    occluding_trees: &[(f32, f32)],
+) -> bool {
+    if !has_los_to_point(px, py, qx, qy, walls) {
+        return false;
+    }
+
+    let qdx = qx - px;
+    let qdy = qy - py;
+    let q_len_sq = qdx * qdx + qdy * qdy;
+    if q_len_sq < 0.001 {
+        return true;
+    }
+
+    const OCC_R_SQ: f32 = 0.29 * 0.29;
+    let max_dist_sq = OCC_R_SQ * q_len_sq;
+
+    for &(ax, ay) in occluding_trees {
+        let apx = ax - px;
+        let apy = ay - py;
+        let dot = apx * qdx + apy * qdy;
+        if dot > 0.0 && dot < q_len_sq {
+            let cross = apx * qdy - apy * qdx;
+            if cross * cross <= max_dist_sq {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[inline(always)]
 fn push_triangle_fast(
     out: &mut Vec<ByondValue>,
     anchor_x: i32,
@@ -455,7 +543,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         let center_y = py.floor() as i32;
 
         let mut walls = HashSet::new();
-        let mut trees = HashSet::new();
+        let mut trees: Vec<(i32, i32, f32, f32, f32)> = Vec::with_capacity(64);
 
         for dx in -r_i32..=r_i32 {
             for dy in -r_i32..=r_i32 {
@@ -464,7 +552,16 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
 
                 match map.get(tx, ty, pz) {
                     1 => { walls.insert((tx, ty)); }
-                    2 => { trees.insert((tx, ty)); }
+                    2 => {
+                        let cx = tx as f32 + 0.5;
+                        let cy = ty as f32 + 0.5;
+                        let vx = cx - px;
+                        let vy = cy - py;
+                        let dist_sq = vx * vx + vy * vy;
+                        if dist_sq > 0.35 * 0.35 {
+                            trees.push((tx, ty, cx, cy, dist_sq));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -472,43 +569,45 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
 
         let mut out = Vec::with_capacity(512);
 
-        for &(tx, ty) in &trees {
-            if has_los_to_turf(px, py, tx, ty, &walls) {
-                let cx = tx as f32 + 0.5;
-                let cy = ty as f32 + 0.5;
-                let r = 0.35;
-                let vx = cx - px;
-                let vy = cy - py;
-                let dist_sq = vx * vx + vy * vy;
-                let r_sq = r * r;
+        trees.sort_unstable_by(|a, b| a.4.total_cmp(&b.4));
+        let mut occluding_trees: Vec<(f32, f32)> = Vec::with_capacity(trees.len());
 
-                if dist_sq > r_sq {
-                    let dist = dist_sq.sqrt();
-                    let ux = vx / dist;
-                    let uy = vy / dist;
-                    let nx = -uy;
-                    let ny = ux;
+        for &(tx, ty, cx, cy, dist_sq) in &trees {
+            let r = 0.35;
+            let vx = cx - px;
+            let vy = cy - py;
+            let dist = dist_sq.sqrt();
+            let ux_dir = vx / dist;
+            let uy_dir = vy / dist;
+            let nx = -uy_dir;
+            let ny = ux_dir;
 
-                    let t1_x = cx + nx * r + ux * (r * 0.2);
-                    let t1_y = cy + ny * r + uy * (r * 0.2);
-                    let t2_x = cx - nx * r + ux * (r * 0.2);
-                    let t2_y = cy - ny * r + uy * (r * 0.2);
+            let t1_x = cx + nx * r + ux_dir * (r * 0.2);
+            let t1_y = cy + ny * r + uy_dir * (r * 0.2);
+            let t2_x = cx - nx * r + ux_dir * (r * 0.2);
+            let t2_y = cy - ny * r + uy_dir * (r * 0.2);
 
-                    let r1 = project_ray_solid(t1_x, t1_y, px, py);
-                    let r2 = project_ray_solid(t2_x, t2_y, px, py);
+            let visible = is_tree_point_visible(px, py, cx, cy, &walls, &occluding_trees)
+                || is_tree_point_visible(px, py, t1_x, t1_y, &walls, &occluding_trees)
+                || is_tree_point_visible(px, py, t2_x, t2_y, &walls, &occluding_trees);
 
-                    let txf = tx as f32;
-                    let tyf = ty as f32;
+            if visible {
+                let r1 = project_ray_solid(t1_x, t1_y, px, py);
+                let r2 = project_ray_solid(t2_x, t2_y, px, py);
 
-                    let ux = tx as u32; let uy = ty as u32;
+                let txf = tx as f32;
+                let tyf = ty as f32;
+                let ux = tx as u32;
+                let uy = ty as u32;
 
-                    push_quad_fast(&mut out, tx, ty,
-                        (t1_x - txf) * 32.0, (t1_y - tyf) * 32.0,
-                        (t2_x - txf) * 32.0, (t2_y - tyf) * 32.0,
-                        (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-                        (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-                        make_key(4, ux, uy, 1), make_key(4, ux, uy, 2));
-                }
+                push_quad_fast(&mut out, tx, ty,
+                    (t1_x - txf) * 32.0, (t1_y - tyf) * 32.0,
+                    (t2_x - txf) * 32.0, (t2_y - tyf) * 32.0,
+                    (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
+                    (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
+                    make_key(4, ux, uy, 1), make_key(4, ux, uy, 2));
+
+                occluding_trees.push((cx, cy));
             }
         }
 
@@ -542,41 +641,46 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     while walls.contains(&(x2 + 1, ty)) && !walls.contains(&(x2 + 1, ty - 1)) {
                         x2 += 1;
                     }
-                    let left_x = tx;
-                    let right_x = x2 + 1;
-                    let left_xf = left_x as f32;
-                    let right_xf = right_x as f32;
 
-                    let dy = (tyf - py).max(0.001);
-                    let t = (1.0 / dy).min(50.0);
+                    if is_horiz_segment_visible(px, py, tx, x2, tyf - 0.05, &walls) {
+                        let left_x = tx;
+                        let right_x = x2 + 1;
+                        let left_xf = left_x as f32;
+                        let right_xf = right_x as f32;
 
-                    let x_exit_l = left_xf + (left_xf - px) * t;
-                    let x_exit_r = right_xf + (right_xf - px) * t;
+                        let dy = (tyf - py).max(0.001);
+                        let t = (1.0 / dy).min(50.0);
 
-                    let hit_left = project_ray_solid(left_xf, tyf, px, py);
-                    let hit_right = project_ray_solid(right_xf, tyf, px, py);
+                        let mut x_exit_l = left_xf + (left_xf - px) * t;
+                        let mut x_exit_r = right_xf + (right_xf - px) * t;
+                        if walls.contains(&(left_x - 1, ty)) { x_exit_l -= 0.02; }
+                        if walls.contains(&(x2 + 1, ty)) { x_exit_r += 0.02; }
 
-                    push_quad_fast(&mut out, tx, ty,
-                        (x_exit_l - txf) * 32.0, 32.0,
-                        (x_exit_r - txf) * 32.0, 32.0,
-                        (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
-                        (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
-                        make_key(0, left_x as u32, uy, 1), make_key(0, left_x as u32, uy, 2));
+                        let hit_left = project_ray_solid(left_xf, tyf, px, py);
+                        let hit_right = project_ray_solid(right_xf, tyf, px, py);
 
-                    if x_exit_l < left_xf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            (left_xf - txf) * 32.0, 0.0,
-                            (left_xf - txf) * 32.0, 32.0,
+                        push_quad_fast(&mut out, tx, ty,
                             (x_exit_l - txf) * 32.0, 32.0,
-                            make_key(0, left_x as u32, uy, 3));
-                    }
-
-                    if x_exit_r > right_xf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            (right_xf - txf) * 32.0, 0.0,
                             (x_exit_r - txf) * 32.0, 32.0,
-                            (right_xf - txf) * 32.0, 32.0,
-                            make_key(0, left_x as u32, uy, 4));
+                            (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
+                            (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
+                            make_key(0, left_x as u32, uy, 1), make_key(0, left_x as u32, uy, 2));
+
+                        if (left_xf - x_exit_l) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                (left_xf - txf) * 32.0, 0.0,
+                                (left_xf - txf) * 32.0, 32.0,
+                                (x_exit_l - txf) * 32.0, 32.0,
+                                make_key(0, left_x as u32, uy, 3));
+                        }
+
+                        if (x_exit_r - right_xf) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                (right_xf - txf) * 32.0, 0.0,
+                                (x_exit_r - txf) * 32.0, 32.0,
+                                (right_xf - txf) * 32.0, 32.0,
+                                make_key(0, left_x as u32, uy, 4));
+                        }
                     }
                 }
             }
@@ -590,41 +694,46 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     while walls.contains(&(x2 + 1, ty)) && !walls.contains(&(x2 + 1, ty + 1)) {
                         x2 += 1;
                     }
-                    let left_x = tx;
-                    let right_x = x2 + 1;
-                    let left_xf = left_x as f32;
-                    let right_xf = right_x as f32;
 
-                    let dy = (py - tyf_plus_1).max(0.001);
-                    let t = (1.0 / dy).min(50.0);
+                    if is_horiz_segment_visible(px, py, tx, x2, tyf_plus_1 + 0.05, &walls) {
+                        let left_x = tx;
+                        let right_x = x2 + 1;
+                        let left_xf = left_x as f32;
+                        let right_xf = right_x as f32;
 
-                    let x_exit_r = right_xf + (right_xf - px) * t;
-                    let x_exit_l = left_xf + (left_xf - px) * t;
+                        let dy = (py - tyf_plus_1).max(0.001);
+                        let t = (1.0 / dy).min(50.0);
 
-                    let hit_right = project_ray_solid(right_xf, tyf_plus_1, px, py);
-                    let hit_left = project_ray_solid(left_xf, tyf_plus_1, px, py);
+                        let mut x_exit_r = right_xf + (right_xf - px) * t;
+                        let mut x_exit_l = left_xf + (left_xf - px) * t;
+                        if walls.contains(&(left_x - 1, ty)) { x_exit_l -= 0.02; }
+                        if walls.contains(&(x2 + 1, ty)) { x_exit_r += 0.02; }
 
-                    push_quad_fast(&mut out, tx, ty,
-                        (x_exit_r - txf) * 32.0, 0.0,
-                        (x_exit_l - txf) * 32.0, 0.0,
-                        (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
-                        (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
-                        make_key(1, left_x as u32, uy, 1), make_key(1, left_x as u32, uy, 2));
+                        let hit_right = project_ray_solid(right_xf, tyf_plus_1, px, py);
+                        let hit_left = project_ray_solid(left_xf, tyf_plus_1, px, py);
 
-                    if x_exit_r > right_xf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            (right_xf - txf) * 32.0, 32.0,
-                            (right_xf - txf) * 32.0, 0.0,
+                        push_quad_fast(&mut out, tx, ty,
                             (x_exit_r - txf) * 32.0, 0.0,
-                            make_key(1, left_x as u32, uy, 3));
-                    }
-
-                    if x_exit_l < left_xf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            (left_xf - txf) * 32.0, 32.0,
                             (x_exit_l - txf) * 32.0, 0.0,
-                            (left_xf - txf) * 32.0, 0.0,
-                            make_key(1, left_x as u32, uy, 4));
+                            (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
+                            (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
+                            make_key(1, left_x as u32, uy, 1), make_key(1, left_x as u32, uy, 2));
+
+                        if (x_exit_r - right_xf) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                (right_xf - txf) * 32.0, 32.0,
+                                (right_xf - txf) * 32.0, 0.0,
+                                (x_exit_r - txf) * 32.0, 0.0,
+                                make_key(1, left_x as u32, uy, 3));
+                        }
+
+                        if (left_xf - x_exit_l) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                (left_xf - txf) * 32.0, 32.0,
+                                (x_exit_l - txf) * 32.0, 0.0,
+                                (left_xf - txf) * 32.0, 0.0,
+                                make_key(1, left_x as u32, uy, 4));
+                        }
                     }
                 }
             }
@@ -637,41 +746,46 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     while walls.contains(&(tx, y2 + 1)) && !walls.contains(&(tx - 1, y2 + 1)) {
                         y2 += 1;
                     }
-                    let bot_y = ty;
-                    let top_y = y2 + 1;
-                    let bot_yf = bot_y as f32;
-                    let top_yf = top_y as f32;
 
-                    let dx = (txf - px).max(0.001);
-                    let t = (1.0 / dx).min(50.0);
+                    if is_vert_segment_visible(px, py, ty, y2, txf - 0.05, &walls) {
+                        let bot_y = ty;
+                        let top_y = y2 + 1;
+                        let bot_yf = bot_y as f32;
+                        let top_yf = top_y as f32;
 
-                    let y_exit_top = top_yf + (top_yf - py) * t;
-                    let y_exit_bot = bot_yf + (bot_yf - py) * t;
+                        let dx = (txf - px).max(0.001);
+                        let t = (1.0 / dx).min(50.0);
 
-                    let hit_top = project_ray_solid(txf, top_yf, px, py);
-                    let hit_bot = project_ray_solid(txf, bot_yf, px, py);
+                        let mut y_exit_top = top_yf + (top_yf - py) * t;
+                        let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
+                        if walls.contains(&(tx, y2 + 1)) { y_exit_top += 0.02; }
+                        if walls.contains(&(tx, bot_y - 1)) { y_exit_bot -= 0.02; }
 
-                    push_quad_fast(&mut out, tx, ty,
-                        32.0, (y_exit_top - tyf) * 32.0,
-                        32.0, (y_exit_bot - tyf) * 32.0,
-                        (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
-                        (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
-                        make_key(2, ux, bot_y as u32, 1), make_key(2, ux, bot_y as u32, 2));
+                        let hit_top = project_ray_solid(txf, top_yf, px, py);
+                        let hit_bot = project_ray_solid(txf, bot_yf, px, py);
 
-                    if y_exit_top > top_yf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            0.0, (top_yf - tyf) * 32.0,
+                        push_quad_fast(&mut out, tx, ty,
                             32.0, (y_exit_top - tyf) * 32.0,
-                            32.0, (top_yf - tyf) * 32.0,
-                            make_key(2, ux, bot_y as u32, 3));
-                    }
-
-                    if y_exit_bot < bot_yf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            0.0, (bot_yf - tyf) * 32.0,
-                            32.0, (bot_yf - tyf) * 32.0,
                             32.0, (y_exit_bot - tyf) * 32.0,
-                            make_key(2, ux, bot_y as u32, 4));
+                            (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
+                            (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
+                            make_key(2, ux, bot_y as u32, 1), make_key(2, ux, bot_y as u32, 2));
+
+                        if (y_exit_top - top_yf) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                0.0, (top_yf - tyf) * 32.0,
+                                32.0, (y_exit_top - tyf) * 32.0,
+                                32.0, (top_yf - tyf) * 32.0,
+                                make_key(2, ux, bot_y as u32, 3));
+                        }
+
+                        if (bot_yf - y_exit_bot) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                0.0, (bot_yf - tyf) * 32.0,
+                                32.0, (bot_yf - tyf) * 32.0,
+                                32.0, (y_exit_bot - tyf) * 32.0,
+                                make_key(2, ux, bot_y as u32, 4));
+                        }
                     }
                 }
             }
@@ -685,41 +799,46 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     while walls.contains(&(tx, y2 + 1)) && !walls.contains(&(tx + 1, y2 + 1)) {
                         y2 += 1;
                     }
-                    let bot_y = ty;
-                    let top_y = y2 + 1;
-                    let bot_yf = bot_y as f32;
-                    let top_yf = top_y as f32;
 
-                    let dx = (px - txf_plus_1).max(0.001);
-                    let t = (1.0 / dx).min(50.0);
+                    if is_vert_segment_visible(px, py, ty, y2, txf_plus_1 + 0.05, &walls) {
+                        let bot_y = ty;
+                        let top_y = y2 + 1;
+                        let bot_yf = bot_y as f32;
+                        let top_yf = top_y as f32;
 
-                    let y_exit_bot = bot_yf + (bot_yf - py) * t;
-                    let y_exit_top = top_yf + (top_yf - py) * t;
+                        let dx = (px - txf_plus_1).max(0.001);
+                        let t = (1.0 / dx).min(50.0);
 
-                    let hit_bot = project_ray_solid(txf_plus_1, bot_yf, px, py);
-                    let hit_top = project_ray_solid(txf_plus_1, top_yf, px, py);
+                        let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
+                        let mut y_exit_top = top_yf + (top_yf - py) * t;
+                        if walls.contains(&(tx, y2 + 1)) { y_exit_top += 0.02; }
+                        if walls.contains(&(tx, bot_y - 1)) { y_exit_bot -= 0.02; }
 
-                    push_quad_fast(&mut out, tx, ty,
-                        0.0, (y_exit_bot - tyf) * 32.0,
-                        0.0, (y_exit_top - tyf) * 32.0,
-                        (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
-                        (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
-                        make_key(3, ux, bot_y as u32, 1), make_key(3, ux, bot_y as u32, 2));
+                        let hit_bot = project_ray_solid(txf_plus_1, bot_yf, px, py);
+                        let hit_top = project_ray_solid(txf_plus_1, top_yf, px, py);
 
-                    if y_exit_bot < bot_yf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            32.0, (bot_yf - tyf) * 32.0,
+                        push_quad_fast(&mut out, tx, ty,
                             0.0, (y_exit_bot - tyf) * 32.0,
-                            0.0, (bot_yf - tyf) * 32.0,
-                            make_key(3, ux, bot_y as u32, 3));
-                    }
-
-                    if y_exit_top > top_yf {
-                        push_triangle_fast(&mut out, tx, ty,
-                            32.0, (top_yf - tyf) * 32.0,
-                            0.0, (top_yf - tyf) * 32.0,
                             0.0, (y_exit_top - tyf) * 32.0,
-                            make_key(3, ux, bot_y as u32, 4));
+                            (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
+                            (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
+                            make_key(3, ux, bot_y as u32, 1), make_key(3, ux, bot_y as u32, 2));
+
+                        if (bot_yf - y_exit_bot) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                32.0, (bot_yf - tyf) * 32.0,
+                                0.0, (y_exit_bot - tyf) * 32.0,
+                                0.0, (bot_yf - tyf) * 32.0,
+                                make_key(3, ux, bot_y as u32, 3));
+                        }
+
+                        if (y_exit_top - top_yf) * 32.0 > 0.7 {
+                            push_triangle_fast(&mut out, tx, ty,
+                                32.0, (top_yf - tyf) * 32.0,
+                                0.0, (top_yf - tyf) * 32.0,
+                                0.0, (y_exit_top - tyf) * 32.0,
+                                make_key(3, ux, bot_y as u32, 4));
+                        }
                     }
                 }
             }
