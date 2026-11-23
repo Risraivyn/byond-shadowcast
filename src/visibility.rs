@@ -352,7 +352,7 @@ fn push_quad_fast(
 
 #[inline(always)]
 fn make_key(category: u32, x: u32, y: u32, part: u32) -> f32 {
-    let val = (category * 500_000) + ((y * 256 + x) * 8) + part;
+    let val = (category * 650_000) + ((y * 256 + x) * 8) + part;
     val as f32
 }
 
@@ -385,7 +385,7 @@ fn render_shadow_box(
 
     if py < by1 {
         let dy = (by1 - py).max(0.001);
-        let t = (height / dy).min(50.0);
+        let t = (height / dy).min(28.0);
 
         let x_exit_l = bx1 + (bx1 - px) * t;
         let x_exit_r = bx2 + (bx2 - px) * t;
@@ -419,7 +419,7 @@ fn render_shadow_box(
 
     if py > by2 {
         let dy = (py - by2).max(0.001);
-        let t = (height / dy).min(50.0);
+        let t = (height / dy).min(28.0);
 
         let x_exit_r = bx2 + (bx2 - px) * t;
         let x_exit_l = bx1 + (bx1 - px) * t;
@@ -453,7 +453,7 @@ fn render_shadow_box(
 
     if px < bx1 {
         let dx = (bx1 - px).max(0.001);
-        let t = (width / dx).min(50.0);
+        let t = (width / dx).min(28.0);
 
         let y_exit_top = by2 + (by2 - py) * t;
         let y_exit_bot = by1 + (by1 - py) * t;
@@ -487,7 +487,7 @@ fn render_shadow_box(
 
     if px > bx2 {
         let dx = (px - bx2).max(0.001);
-        let t = (width / dx).min(50.0);
+        let t = (width / dx).min(28.0);
 
         let y_exit_bot = by1 + (by1 - py) * t;
         let y_exit_top = by2 + (by2 - py) * t;
@@ -649,7 +649,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let right_xf = right_x as f32;
 
                         let dy = (tyf - py).max(0.001);
-                        let t = (1.0 / dy).min(50.0);
+                        let t = (1.0 / dy).min(28.0);
 
                         let mut x_exit_l = left_xf + (left_xf - px) * t;
                         let mut x_exit_r = right_xf + (right_xf - px) * t;
@@ -702,7 +702,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let right_xf = right_x as f32;
 
                         let dy = (py - tyf_plus_1).max(0.001);
-                        let t = (1.0 / dy).min(50.0);
+                        let t = (1.0 / dy).min(28.0);
 
                         let mut x_exit_r = right_xf + (right_xf - px) * t;
                         let mut x_exit_l = left_xf + (left_xf - px) * t;
@@ -754,7 +754,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let top_yf = top_y as f32;
 
                         let dx = (txf - px).max(0.001);
-                        let t = (1.0 / dx).min(50.0);
+                        let t = (1.0 / dx).min(28.0);
 
                         let mut y_exit_top = top_yf + (top_yf - py) * t;
                         let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
@@ -807,7 +807,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let top_yf = top_y as f32;
 
                         let dx = (px - txf_plus_1).max(0.001);
-                        let t = (1.0 / dx).min(50.0);
+                        let t = (1.0 / dx).min(28.0);
 
                         let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
                         let mut y_exit_top = top_yf + (top_yf - py) * t;
