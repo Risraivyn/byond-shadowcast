@@ -300,12 +300,9 @@ fn is_tree_point_visible(
 #[inline(always)]
 fn push_triangle_fast(
     out: &mut Vec<ByondValue>,
-    anchor_x: i32,
-    anchor_y: i32,
     ax: f32, ay: f32,
     bx: f32, by: f32,
     cx: f32, cy: f32,
-    key: f32,
 ) {
     let a = (bx - ax) / 32.0;
     let d = (by - ay) / 32.0;
@@ -315,57 +312,36 @@ fn push_triangle_fast(
     let c_mat = ax + 16.0 * a + 16.0 * b - 16.0;
     let f_mat = ay + 16.0 * d + 16.0 * e - 16.0;
 
-    out.push(ByondValue::new_num(anchor_x as f32));
-    out.push(ByondValue::new_num(anchor_y as f32));
     out.push(ByondValue::new_num(a));
     out.push(ByondValue::new_num(b));
     out.push(ByondValue::new_num(c_mat));
     out.push(ByondValue::new_num(d));
     out.push(ByondValue::new_num(e));
     out.push(ByondValue::new_num(f_mat));
-    out.push(ByondValue::new_num(key));
 }
 
+#[inline(always)]
 fn push_quad_fast(
     out: &mut Vec<ByondValue>,
-    anchor_x: i32,
-    anchor_y: i32,
     w1x: f32, w1y: f32,
     w2x: f32, w2y: f32,
     h1x: f32, h1y: f32,
     h2x: f32, h2y: f32,
-    key1: f32,
-    key2: f32,
 ) {
     const OVERLAP_PX: f32 = 2.0;
 
     let t1_h2 = extend_point(w1x, w1y, h2x, h2y, OVERLAP_PX);
-    push_triangle_fast(out, anchor_x, anchor_y,
-        w1x, w1y, w2x, w2y, t1_h2.0, t1_h2.1,
-        key1);
+    push_triangle_fast(out, w1x, w1y, w2x, w2y, t1_h2.0, t1_h2.1);
 
     let t2_h1 = extend_point(w1x, w1y, h1x, h1y, OVERLAP_PX);
-    push_triangle_fast(out, anchor_x, anchor_y,
-        w1x, w1y, h2x, h2y, t2_h1.0, t2_h1.1,
-        key2);
-}
-
-#[inline(always)]
-fn make_key(category: u32, x: u32, y: u32, part: u32) -> f32 {
-    let val = (category * 650_000) + ((y * 256 + x) * 8) + part;
-    val as f32
-}
-
-#[inline(always)]
-fn make_box_key(box_id: u32, part: u32) -> f32 {
-    let val = 3_000_000 + (box_id * 32) + part;
-    val as f32
+    push_triangle_fast(out, w1x, w1y, h2x, h2y, t2_h1.0, t2_h1.1);
 }
 
 #[inline(always)]
 fn render_shadow_box(
     out: &mut Vec<ByondValue>,
     px: f32, py: f32,
+    anchor_xf: f32, anchor_yf: f32,
     sbox: &ShadowBox,
 ) {
     let bx1 = sbox.x1;
@@ -376,16 +352,12 @@ fn render_shadow_box(
     let width = (bx2 - bx1).max(0.001);
     let height = (by2 - by1).max(0.001);
 
-    let anchor_x = bx1.floor() as i32;
-    let anchor_y = by1.floor() as i32;
-    let txf = anchor_x as f32;
-    let tyf = anchor_y as f32;
-
-    let bid = sbox.id;
+    let px_x = |wx: f32| (wx - anchor_xf) * 32.0;
+    let px_y = |wy: f32| (wy - anchor_yf) * 32.0;
 
     if py < by1 {
         let dy = (by1 - py).max(0.001);
-        let t = (height / dy).min(28.0);
+        let t = (height / dy).min(MAX_RAY_TILES);
 
         let x_exit_l = bx1 + (bx1 - px) * t;
         let x_exit_r = bx2 + (bx2 - px) * t;
@@ -393,33 +365,30 @@ fn render_shadow_box(
         let r1 = project_ray_solid(bx1, by1, px, py);
         let r2 = project_ray_solid(bx2, by1, px, py);
 
-        push_quad_fast(out, anchor_x, anchor_y,
-            (x_exit_l - txf) * 32.0, (by2 - tyf) * 32.0,
-            (x_exit_r - txf) * 32.0, (by2 - tyf) * 32.0,
-            (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            make_box_key(bid, 1), make_box_key(bid, 2));
+        push_quad_fast(out,
+            px_x(x_exit_l), px_y(by2),
+            px_x(x_exit_r), px_y(by2),
+            px_x(r1.0), px_y(r1.1),
+            px_x(r2.0), px_y(r2.1));
 
         if x_exit_l < bx1 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (x_exit_l - txf) * 32.0, (by2 - tyf) * 32.0,
-                make_box_key(bid, 3));
+            push_triangle_fast(out,
+                px_x(bx1), px_y(by1),
+                px_x(bx1), px_y(by2),
+                px_x(x_exit_l), px_y(by2));
         }
 
         if x_exit_r > bx2 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (x_exit_r - txf) * 32.0, (by2 - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
-                make_box_key(bid, 4));
+            push_triangle_fast(out,
+                px_x(bx2), px_y(by1),
+                px_x(x_exit_r), px_y(by2),
+                px_x(bx2), px_y(by2));
         }
     }
 
     if py > by2 {
         let dy = (py - by2).max(0.001);
-        let t = (height / dy).min(28.0);
+        let t = (height / dy).min(MAX_RAY_TILES);
 
         let x_exit_r = bx2 + (bx2 - px) * t;
         let x_exit_l = bx1 + (bx1 - px) * t;
@@ -427,33 +396,30 @@ fn render_shadow_box(
         let r2 = project_ray_solid(bx2, by2, px, py);
         let r1 = project_ray_solid(bx1, by2, px, py);
 
-        push_quad_fast(out, anchor_x, anchor_y,
-            (x_exit_r - txf) * 32.0, (by1 - tyf) * 32.0,
-            (x_exit_l - txf) * 32.0, (by1 - tyf) * 32.0,
-            (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            make_box_key(bid, 5), make_box_key(bid, 6));
+        push_quad_fast(out,
+            px_x(x_exit_r), px_y(by1),
+            px_x(x_exit_l), px_y(by1),
+            px_x(r2.0), px_y(r2.1),
+            px_x(r1.0), px_y(r1.1));
 
         if x_exit_r > bx2 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (x_exit_r - txf) * 32.0, (by1 - tyf) * 32.0,
-                make_box_key(bid, 7));
+            push_triangle_fast(out,
+                px_x(bx2), px_y(by2),
+                px_x(bx2), px_y(by1),
+                px_x(x_exit_r), px_y(by1));
         }
 
         if x_exit_l < bx1 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (x_exit_l - txf) * 32.0, (by1 - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
-                make_box_key(bid, 8));
+            push_triangle_fast(out,
+                px_x(bx1), px_y(by2),
+                px_x(x_exit_l), px_y(by1),
+                px_x(bx1), px_y(by1));
         }
     }
 
     if px < bx1 {
         let dx = (bx1 - px).max(0.001);
-        let t = (width / dx).min(28.0);
+        let t = (width / dx).min(MAX_RAY_TILES);
 
         let y_exit_top = by2 + (by2 - py) * t;
         let y_exit_bot = by1 + (by1 - py) * t;
@@ -461,33 +427,30 @@ fn render_shadow_box(
         let r1 = project_ray_solid(bx1, by2, px, py);
         let r2 = project_ray_solid(bx1, by1, px, py);
 
-        push_quad_fast(out, anchor_x, anchor_y,
-            (bx2 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
-            (bx2 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
-            (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            make_box_key(bid, 9), make_box_key(bid, 10));
+        push_quad_fast(out,
+            px_x(bx2), px_y(y_exit_top),
+            px_x(bx2), px_y(y_exit_bot),
+            px_x(r1.0), px_y(r1.1),
+            px_x(r2.0), px_y(r2.1));
 
         if y_exit_top > by2 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
-                make_box_key(bid, 11));
+            push_triangle_fast(out,
+                px_x(bx1), px_y(by2),
+                px_x(bx2), px_y(by2),
+                px_x(bx2), px_y(y_exit_top));
         }
 
         if y_exit_bot < by1 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
-                (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
-                make_box_key(bid, 12));
+            push_triangle_fast(out,
+                px_x(bx1), px_y(by1),
+                px_x(bx2), px_y(y_exit_bot),
+                px_x(bx2), px_y(by1));
         }
     }
 
     if px > bx2 {
         let dx = (px - bx2).max(0.001);
-        let t = (width / dx).min(28.0);
+        let t = (width / dx).min(MAX_RAY_TILES);
 
         let y_exit_bot = by1 + (by1 - py) * t;
         let y_exit_top = by2 + (by2 - py) * t;
@@ -495,27 +458,24 @@ fn render_shadow_box(
         let r2 = project_ray_solid(bx2, by1, px, py);
         let r1 = project_ray_solid(bx2, by2, px, py);
 
-        push_quad_fast(out, anchor_x, anchor_y,
-            (bx1 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
-            (bx1 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
-            (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-            (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-            make_box_key(bid, 13), make_box_key(bid, 14));
+        push_quad_fast(out,
+            px_x(bx1), px_y(y_exit_bot),
+            px_x(bx1), px_y(y_exit_top),
+            px_x(r2.0), px_y(r2.1),
+            px_x(r1.0), px_y(r1.1));
 
         if y_exit_bot < by1 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx2 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (by1 - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (y_exit_bot - tyf) * 32.0,
-                make_box_key(bid, 15));
+            push_triangle_fast(out,
+                px_x(bx2), px_y(by1),
+                px_x(bx1), px_y(by1),
+                px_x(bx1), px_y(y_exit_bot));
         }
 
         if y_exit_top > by2 {
-            push_triangle_fast(out, anchor_x, anchor_y,
-                (bx2 - txf) * 32.0, (by2 - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (y_exit_top - tyf) * 32.0,
-                (bx1 - txf) * 32.0, (by2 - tyf) * 32.0,
-                make_box_key(bid, 16));
+            push_triangle_fast(out,
+                px_x(bx2), px_y(by2),
+                px_x(bx1), px_y(y_exit_top),
+                px_x(bx1), px_y(by2));
         }
     }
 }
@@ -532,6 +492,19 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         let py: f32 = ByondValue(args[1]).get_number().unwrap_or(0.0);
         let pz: i32 = ByondValue(args[2]).get_number().unwrap_or(1.0) as i32;
         let radius: f32 = ByondValue(args[3]).get_number().unwrap_or(8.0);
+        let anchor_xf: f32 = if argc >= 5 {
+            ByondValue(args[4]).get_number().unwrap_or(px.floor())
+        } else {
+            px.floor()
+        };
+        let anchor_yf: f32 = if argc >= 6 {
+            ByondValue(args[5]).get_number().unwrap_or(py.floor())
+        } else {
+            py.floor()
+        };
+
+        let px_x = |wx: f32| (wx - anchor_xf) * 32.0;
+        let px_y = |wy: f32| (wy - anchor_yf) * 32.0;
 
         let map = match WORLD_MAP.read() {
             Ok(m) => m,
@@ -543,7 +516,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         let center_y = py.floor() as i32;
 
         let mut walls = HashSet::new();
-        let mut trees: Vec<(i32, i32, f32, f32, f32)> = Vec::with_capacity(64);
+        let mut trees: Vec<(f32, f32, f32)> = Vec::with_capacity(64);
 
         for dx in -r_i32..=r_i32 {
             for dy in -r_i32..=r_i32 {
@@ -559,7 +532,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let vy = cy - py;
                         let dist_sq = vx * vx + vy * vy;
                         if dist_sq > 0.35 * 0.35 {
-                            trees.push((tx, ty, cx, cy, dist_sq));
+                            trees.push((cx, cy, dist_sq));
                         }
                     }
                     _ => {}
@@ -569,10 +542,10 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
 
         let mut out = Vec::with_capacity(512);
 
-        trees.sort_unstable_by(|a, b| a.4.total_cmp(&b.4));
+        trees.sort_unstable_by(|a, b| a.2.total_cmp(&b.2));
         let mut occluding_trees: Vec<(f32, f32)> = Vec::with_capacity(trees.len());
 
-        for &(tx, ty, cx, cy, dist_sq) in &trees {
+        for &(cx, cy, dist_sq) in &trees {
             let r = 0.35;
             let vx = cx - px;
             let vy = cy - py;
@@ -595,17 +568,11 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                 let r1 = project_ray_solid(t1_x, t1_y, px, py);
                 let r2 = project_ray_solid(t2_x, t2_y, px, py);
 
-                let txf = tx as f32;
-                let tyf = ty as f32;
-                let ux = tx as u32;
-                let uy = ty as u32;
-
-                push_quad_fast(&mut out, tx, ty,
-                    (t1_x - txf) * 32.0, (t1_y - tyf) * 32.0,
-                    (t2_x - txf) * 32.0, (t2_y - tyf) * 32.0,
-                    (r1.0 - txf) * 32.0, (r1.1 - tyf) * 32.0,
-                    (r2.0 - txf) * 32.0, (r2.1 - tyf) * 32.0,
-                    make_key(4, ux, uy, 1), make_key(4, ux, uy, 2));
+                push_quad_fast(&mut out,
+                    px_x(t1_x), px_y(t1_y),
+                    px_x(t2_x), px_y(t2_y),
+                    px_x(r1.0), px_y(r1.1),
+                    px_x(r2.0), px_y(r2.1));
 
                 occluding_trees.push((cx, cy));
             }
@@ -621,7 +588,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                     let obj_ty = sbox.y1.floor() as i32;
 
                     if has_los_to_turf(px, py, obj_tx, obj_ty, &walls) {
-                        render_shadow_box(&mut out, px, py, sbox);
+                        render_shadow_box(&mut out, px, py, anchor_xf, anchor_yf, sbox);
                     }
                 }
             }
@@ -630,8 +597,8 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
         for &(tx, ty) in &walls {
             let txf = tx as f32;
             let tyf = ty as f32;
-            let ux = tx as u32;
-            let uy = ty as u32;
+            let txf_plus_1 = txf + 1.0;
+            let tyf_plus_1 = tyf + 1.0;
 
             let open_s = !walls.contains(&(tx, ty - 1));
             if open_s && py < tyf {
@@ -649,7 +616,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let right_xf = right_x as f32;
 
                         let dy = (tyf - py).max(0.001);
-                        let t = (1.0 / dy).min(28.0);
+                        let t = (1.0 / dy).min(MAX_RAY_TILES);
 
                         let mut x_exit_l = left_xf + (left_xf - px) * t;
                         let mut x_exit_r = right_xf + (right_xf - px) * t;
@@ -659,34 +626,30 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let hit_left = project_ray_solid(left_xf, tyf, px, py);
                         let hit_right = project_ray_solid(right_xf, tyf, px, py);
 
-                        push_quad_fast(&mut out, tx, ty,
-                            (x_exit_l - txf) * 32.0, 32.0,
-                            (x_exit_r - txf) * 32.0, 32.0,
-                            (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
-                            (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
-                            make_key(0, left_x as u32, uy, 1), make_key(0, left_x as u32, uy, 2));
+                        push_quad_fast(&mut out,
+                            px_x(x_exit_l), px_y(tyf_plus_1),
+                            px_x(x_exit_r), px_y(tyf_plus_1),
+                            px_x(hit_left.0), px_y(hit_left.1),
+                            px_x(hit_right.0), px_y(hit_right.1));
 
                         if (left_xf - x_exit_l) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                (left_xf - txf) * 32.0, 0.0,
-                                (left_xf - txf) * 32.0, 32.0,
-                                (x_exit_l - txf) * 32.0, 32.0,
-                                make_key(0, left_x as u32, uy, 3));
+                            push_triangle_fast(&mut out,
+                                px_x(left_xf), px_y(tyf),
+                                px_x(left_xf), px_y(tyf_plus_1),
+                                px_x(x_exit_l), px_y(tyf_plus_1));
                         }
 
                         if (x_exit_r - right_xf) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                (right_xf - txf) * 32.0, 0.0,
-                                (x_exit_r - txf) * 32.0, 32.0,
-                                (right_xf - txf) * 32.0, 32.0,
-                                make_key(0, left_x as u32, uy, 4));
+                            push_triangle_fast(&mut out,
+                                px_x(right_xf), px_y(tyf),
+                                px_x(x_exit_r), px_y(tyf_plus_1),
+                                px_x(right_xf), px_y(tyf_plus_1));
                         }
                     }
                 }
             }
 
             let open_n = !walls.contains(&(tx, ty + 1));
-            let tyf_plus_1 = tyf + 1.0;
             if open_n && py > tyf_plus_1 {
                 let prev_has_n = walls.contains(&(tx - 1, ty)) && !walls.contains(&(tx - 1, ty + 1));
                 if !prev_has_n {
@@ -702,7 +665,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let right_xf = right_x as f32;
 
                         let dy = (py - tyf_plus_1).max(0.001);
-                        let t = (1.0 / dy).min(28.0);
+                        let t = (1.0 / dy).min(MAX_RAY_TILES);
 
                         let mut x_exit_r = right_xf + (right_xf - px) * t;
                         let mut x_exit_l = left_xf + (left_xf - px) * t;
@@ -712,27 +675,24 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let hit_right = project_ray_solid(right_xf, tyf_plus_1, px, py);
                         let hit_left = project_ray_solid(left_xf, tyf_plus_1, px, py);
 
-                        push_quad_fast(&mut out, tx, ty,
-                            (x_exit_r - txf) * 32.0, 0.0,
-                            (x_exit_l - txf) * 32.0, 0.0,
-                            (hit_right.0 - txf) * 32.0, (hit_right.1 - tyf) * 32.0,
-                            (hit_left.0 - txf) * 32.0, (hit_left.1 - tyf) * 32.0,
-                            make_key(1, left_x as u32, uy, 1), make_key(1, left_x as u32, uy, 2));
+                        push_quad_fast(&mut out,
+                            px_x(x_exit_r), px_y(tyf),
+                            px_x(x_exit_l), px_y(tyf),
+                            px_x(hit_right.0), px_y(hit_right.1),
+                            px_x(hit_left.0), px_y(hit_left.1));
 
                         if (x_exit_r - right_xf) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                (right_xf - txf) * 32.0, 32.0,
-                                (right_xf - txf) * 32.0, 0.0,
-                                (x_exit_r - txf) * 32.0, 0.0,
-                                make_key(1, left_x as u32, uy, 3));
+                            push_triangle_fast(&mut out,
+                                px_x(right_xf), px_y(tyf_plus_1),
+                                px_x(right_xf), px_y(tyf),
+                                px_x(x_exit_r), px_y(tyf));
                         }
 
                         if (left_xf - x_exit_l) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                (left_xf - txf) * 32.0, 32.0,
-                                (x_exit_l - txf) * 32.0, 0.0,
-                                (left_xf - txf) * 32.0, 0.0,
-                                make_key(1, left_x as u32, uy, 4));
+                            push_triangle_fast(&mut out,
+                                px_x(left_xf), px_y(tyf_plus_1),
+                                px_x(x_exit_l), px_y(tyf),
+                                px_x(left_xf), px_y(tyf));
                         }
                     }
                 }
@@ -754,7 +714,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let top_yf = top_y as f32;
 
                         let dx = (txf - px).max(0.001);
-                        let t = (1.0 / dx).min(28.0);
+                        let t = (1.0 / dx).min(MAX_RAY_TILES);
 
                         let mut y_exit_top = top_yf + (top_yf - py) * t;
                         let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
@@ -764,34 +724,30 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let hit_top = project_ray_solid(txf, top_yf, px, py);
                         let hit_bot = project_ray_solid(txf, bot_yf, px, py);
 
-                        push_quad_fast(&mut out, tx, ty,
-                            32.0, (y_exit_top - tyf) * 32.0,
-                            32.0, (y_exit_bot - tyf) * 32.0,
-                            (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
-                            (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
-                            make_key(2, ux, bot_y as u32, 1), make_key(2, ux, bot_y as u32, 2));
+                        push_quad_fast(&mut out,
+                            px_x(txf_plus_1), px_y(y_exit_top),
+                            px_x(txf_plus_1), px_y(y_exit_bot),
+                            px_x(hit_top.0), px_y(hit_top.1),
+                            px_x(hit_bot.0), px_y(hit_bot.1));
 
                         if (y_exit_top - top_yf) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                0.0, (top_yf - tyf) * 32.0,
-                                32.0, (y_exit_top - tyf) * 32.0,
-                                32.0, (top_yf - tyf) * 32.0,
-                                make_key(2, ux, bot_y as u32, 3));
+                            push_triangle_fast(&mut out,
+                                px_x(txf), px_y(top_yf),
+                                px_x(txf_plus_1), px_y(y_exit_top),
+                                px_x(txf_plus_1), px_y(top_yf));
                         }
 
                         if (bot_yf - y_exit_bot) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                0.0, (bot_yf - tyf) * 32.0,
-                                32.0, (bot_yf - tyf) * 32.0,
-                                32.0, (y_exit_bot - tyf) * 32.0,
-                                make_key(2, ux, bot_y as u32, 4));
+                            push_triangle_fast(&mut out,
+                                px_x(txf), px_y(bot_yf),
+                                px_x(txf_plus_1), px_y(bot_yf),
+                                px_x(txf_plus_1), px_y(y_exit_bot));
                         }
                     }
                 }
             }
 
             let open_e = !walls.contains(&(tx + 1, ty));
-            let txf_plus_1 = txf + 1.0;
             if open_e && px > txf_plus_1 {
                 let prev_has_e = walls.contains(&(tx, ty - 1)) && !walls.contains(&(tx + 1, ty - 1));
                 if !prev_has_e {
@@ -807,7 +763,7 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let top_yf = top_y as f32;
 
                         let dx = (px - txf_plus_1).max(0.001);
-                        let t = (1.0 / dx).min(28.0);
+                        let t = (1.0 / dx).min(MAX_RAY_TILES);
 
                         let mut y_exit_bot = bot_yf + (bot_yf - py) * t;
                         let mut y_exit_top = top_yf + (top_yf - py) * t;
@@ -817,27 +773,24 @@ pub unsafe extern "C" fn calculate_shadows_fast(argc: u32, argv: *const CByondVa
                         let hit_bot = project_ray_solid(txf_plus_1, bot_yf, px, py);
                         let hit_top = project_ray_solid(txf_plus_1, top_yf, px, py);
 
-                        push_quad_fast(&mut out, tx, ty,
-                            0.0, (y_exit_bot - tyf) * 32.0,
-                            0.0, (y_exit_top - tyf) * 32.0,
-                            (hit_bot.0 - txf) * 32.0, (hit_bot.1 - tyf) * 32.0,
-                            (hit_top.0 - txf) * 32.0, (hit_top.1 - tyf) * 32.0,
-                            make_key(3, ux, bot_y as u32, 1), make_key(3, ux, bot_y as u32, 2));
+                        push_quad_fast(&mut out,
+                            px_x(txf), px_y(y_exit_bot),
+                            px_x(txf), px_y(y_exit_top),
+                            px_x(hit_bot.0), px_y(hit_bot.1),
+                            px_x(hit_top.0), px_y(hit_top.1));
 
                         if (bot_yf - y_exit_bot) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                32.0, (bot_yf - tyf) * 32.0,
-                                0.0, (y_exit_bot - tyf) * 32.0,
-                                0.0, (bot_yf - tyf) * 32.0,
-                                make_key(3, ux, bot_y as u32, 3));
+                            push_triangle_fast(&mut out,
+                                px_x(txf_plus_1), px_y(bot_yf),
+                                px_x(txf), px_y(y_exit_bot),
+                                px_x(txf), px_y(bot_yf));
                         }
 
                         if (y_exit_top - top_yf) * 32.0 > 0.7 {
-                            push_triangle_fast(&mut out, tx, ty,
-                                32.0, (top_yf - tyf) * 32.0,
-                                0.0, (top_yf - tyf) * 32.0,
-                                0.0, (y_exit_top - tyf) * 32.0,
-                                make_key(3, ux, bot_y as u32, 4));
+                            push_triangle_fast(&mut out,
+                                px_x(txf_plus_1), px_y(top_yf),
+                                px_x(txf), px_y(top_yf),
+                                px_x(txf), px_y(y_exit_top));
                         }
                     }
                 }
